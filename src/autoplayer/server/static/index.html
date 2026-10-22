@@ -16,19 +16,36 @@
     </header>
 
     <div id="layout" class="layout queue-open">
-      <nav id="playlists" aria-label="Playlists"></nav>
+      <nav aria-label="Library">
+        <button id="view-all" class="nav-item">All tracks <span id="all-count" class="count"></span></button>
+        <div class="nav-section">
+          <button id="playlists-toggle" class="nav-section-header" aria-expanded="true" aria-controls="playlists">Playlists</button>
+          <div id="playlists"></div>
+        </div>
+      </nav>
 
       <main>
         <div class="playlist-header">
-          <h2 id="playlist-name">Pick a playlist</h2>
+          <h2 id="playlist-name">All tracks</h2>
+          <span id="track-count" class="muted"></span>
           <button id="play-all" class="primary" hidden>Play from start</button>
+        </div>
+        <div class="search-row" hidden>
+          <input
+            id="search"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Search tracks"
+            placeholder="Search title, artist, key (8A) or BPM (128, 120-128)   /"
+          />
         </div>
         <table id="tracks" hidden>
           <thead>
             <tr>
               <th aria-sort="ascending"><button class="sort" data-sort="order" title="Sort by playlist order">#</button></th>
-              <th>Title</th>
-              <th>Artist</th>
+              <th aria-sort="none"><button class="sort" data-sort="title" title="Sort by title">Title</button></th>
+              <th aria-sort="none"><button class="sort" data-sort="artist" title="Sort by artist">Artist</button></th>
               <th class="num" aria-sort="none"><button class="sort" data-sort="bpm" title="Sort by BPM">BPM</button></th>
               <th aria-sort="none"><button class="sort" data-sort="key" title="Sort by key (Camelot)">Key</button></th>
               <th class="num">Time</th>

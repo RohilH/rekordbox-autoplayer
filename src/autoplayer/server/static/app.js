@@ -1,7 +1,8 @@
 const $ = (id) => document.getElementById(id);
 
 let libraryRoot = null;
-let shownPlaylist = null;
+// The track list on screen: all tracks (id null) or a playlist, as searched and sorted.
+let shownList = null;
 let lastState = {};
 let settingsFocused = false;
 
@@ -43,7 +44,7 @@ function renderTree(nodes) {
       count.className = "count";
       count.textContent = node.track_count;
       button.append(count);
-      button.addEventListener("click", () => showPlaylist(node.id));
+      button.addEventListener("click", () => showList(node.id));
       li.append(button);
     }
     ul.append(li);
@@ -65,14 +66,17 @@ async function loadLibrary() {
   }
   usb.textContent = library.name;
   usb.className = "pill ok";
+  $("all-count").textContent = library.track_count;
   if (library.root === libraryRoot) return;
   libraryRoot = library.root;
   $("playlists").replaceChildren(renderTree(library.playlists));
+  if (!shownList) showList(null);
 }
 
-const SORTS = ["order", "bpm", "key"];
+const SORTS = ["order", "title", "artist", "bpm", "key"];
+const SEARCH_DELAY_MS = 150;
 
-// Remembered per browser; falls back to playlist order if storage is unavailable.
+// Remembered per browser; falls back to list order if storage is unavailable.
 function loadSort() {
   try {
     const saved = JSON.parse(localStorage.getItem("trackSort"));
@@ -89,7 +93,7 @@ function setSort(sort) {
   try {
     localStorage.setItem("trackSort", JSON.stringify(trackSort));
   } catch {}
-  if (shownPlaylist) showPlaylist(shownPlaylist.id);
+  if (shownList) showList(shownList.id, shownList.query);
 }
 
 function renderSortHeaders() {
@@ -103,22 +107,32 @@ document.querySelectorAll("#tracks th button.sort").forEach((button) =>
   button.addEventListener("click", () => setSort(button.dataset.sort)),
 );
 
-async function showPlaylist(id) {
-  const query = new URLSearchParams({ sort: trackSort.sort, descending: trackSort.descending });
-  const playlist = await api("GET", `/api/playlists/${id}?${query}`);
-  renderSortHeaders();
-  shownPlaylist = playlist;
-  document.querySelectorAll("nav button.selected").forEach((b) => b.classList.remove("selected"));
-  document.querySelector(`nav button[data-playlist-id="${id}"]`)?.classList.add("selected");
-  $("playlist-name").textContent = playlist.name;
-  $("play-all").hidden = playlist.tracks.length === 0;
-  $("empty").hidden = playlist.tracks.length > 0;
-  $("empty").textContent = "This playlist is empty.";
-  $("tracks").hidden = playlist.tracks.length === 0;
+let listRequest = 0;
 
-  const rows = playlist.tracks.map((track, index) => {
+// Show all tracks (id null) or a playlist. Results that arrive after a newer request are dropped, so fast
+// typing in the search box can't leave an older search on screen.
+async function showList(id, query = "") {
+  const request = ++listRequest;
+  const params = new URLSearchParams({ query, sort: trackSort.sort, descending: trackSort.descending });
+  const list = await api("GET", `${id == null ? "/api/tracks" : `/api/playlists/${id}`}?${params}`);
+  if (request !== listRequest) return;
+  const switched = !shownList || shownList.id !== id;
+  shownList = list;
+  renderSortHeaders();
+  document.querySelectorAll("nav .selected").forEach((b) => b.classList.remove("selected"));
+  (id == null ? $("view-all") : document.querySelector(`nav button[data-playlist-id="${id}"]`))?.classList.add("selected");
+  $("playlist-name").textContent = list.name;
+  document.querySelector(".search-row").hidden = false;
+  if (switched) $("search").value = query;
+  const count = list.tracks.length;
+  $("track-count").textContent = query ? `${count} of ${list.total}` : `${list.total} tracks`;
+  $("play-all").hidden = count === 0;
+  $("empty").hidden = count > 0;
+  $("empty").textContent = query ? `No tracks match “${query}”.` : "This playlist is empty.";
+  $("tracks").hidden = count === 0;
+
+  const rows = list.tracks.map((track, index) => {
     const tr = document.createElement("tr");
-    tr.dataset.index = track.position;
     tr.dataset.trackId = track.id;
     const cells = [track.position + 1, track.title, track.artist, track.bpm.toFixed(1), track.key, formatTime(track.duration_s)];
     cells.forEach((value, i) => {
@@ -142,27 +156,59 @@ async function showPlaylist(id) {
 }
 
 function play(index) {
-  if (!shownPlaylist) return;
+  if (!shownList) return;
   api("POST", "/api/play", {
-    playlist_id: shownPlaylist.id,
+    playlist_id: shownList.id,
     index,
-    sort: shownPlaylist.sort,
-    descending: shownPlaylist.descending,
+    query: shownList.query,
+    sort: shownList.sort,
+    descending: shownList.descending,
   });
 }
 
+// Tracks are matched by identity, so the playing and next tracks light up in any list they appear in.
 function highlightRows(state) {
-  const samePlaylist = shownPlaylist && state.playlist_id === shownPlaylist.id;
-  const failed = new Set(samePlaylist ? state.failed ?? [] : []);
+  const failed = new Set(state.failed_track_ids ?? []);
   const queued = new Set((state.up_next ?? []).map((q) => q.track.id));
+  const current = state.track?.id;
+  const next = state.next_track?.id;
   document.querySelectorAll("#tracks tbody tr").forEach((tr) => {
-    const index = Number(tr.dataset.index);
-    tr.classList.toggle("current", samePlaylist && !state.from_queue && index === state.index);
-    tr.classList.toggle("next", samePlaylist && !state.next_from_queue && index === state.next_index);
-    tr.classList.toggle("failed", failed.has(index));
-    tr.classList.toggle("queued", queued.has(Number(tr.dataset.trackId)));
+    const id = Number(tr.dataset.trackId);
+    tr.classList.toggle("current", id === current);
+    tr.classList.toggle("next", id === next && id !== current);
+    tr.classList.toggle("failed", failed.has(id));
+    tr.classList.toggle("queued", queued.has(id));
   });
 }
+
+let searchTimer = null;
+const searchBox = $("search");
+searchBox.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => shownList && showList(shownList.id, searchBox.value.trim()), SEARCH_DELAY_MS);
+});
+searchBox.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    searchBox.value = "";
+    searchBox.dispatchEvent(new Event("input"));
+    searchBox.blur();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement;
+  if (event.key === "/" && !typing) {
+    event.preventDefault();
+    searchBox.focus();
+  }
+});
+
+$("view-all").addEventListener("click", () => showList(null));
+$("playlists-toggle").addEventListener("click", () => {
+  const toggle = $("playlists-toggle");
+  const open = toggle.getAttribute("aria-expanded") !== "true";
+  toggle.setAttribute("aria-expanded", String(open));
+  $("playlists").hidden = !open;
+});
 
 const ICONS = {
   playNext: '<path d="M5 4h14v2H5zM12 8l6 6h-4v6h-4v-6H6z" />',
@@ -187,7 +233,7 @@ function miniButton(icon, label, onClick) {
 }
 
 function queueTrack(track, position) {
-  const body = { track_id: track.id, playlist_id: shownPlaylist?.id ?? null, position };
+  const body = { track_id: track.id, playlist_id: shownList?.id ?? null, position };
   api("POST", "/api/queue", body).then(renderState).catch(() => {});
 }
 

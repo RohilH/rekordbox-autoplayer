@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 
 from autoplayer.audio.engine import Engine
 from autoplayer.library.keys import sorted_positions
-from autoplayer.library.pdb import Library, load_library
+from autoplayer.library.pdb import Library, Track, load_library
+from autoplayer.library.search import search
 from autoplayer.library.usb import find_usb_roots
 
 log = logging.getLogger(__name__)
@@ -61,14 +62,41 @@ class LibraryWatcher:
         self._stop.set()
 
 
-SortName = Literal["order", "bpm", "key"]
+SortName = Literal["order", "title", "artist", "bpm", "key"]
+ALL_TRACKS = "All tracks"
 
 
 class PlayRequest(BaseModel):
-    playlist_id: int
-    index: int = Field(default=0, description="Position in the playlist as sorted")
+    playlist_id: int | None = Field(default=None, description="None plays from all tracks")
+    index: int = Field(default=0, description="Position in the list as searched and sorted")
+    query: str = ""
     sort: SortName = "order"
     descending: bool = False
+
+
+def track_list(
+    library: Library, playlist_id: int | None, query: str, sort: str, descending: bool
+) -> tuple[str, list[Track], list[int], int]:
+    """A playlist, or every track, searched and sorted. Returns its name, the tracks in order, each one's
+    position in the unfiltered list, and how many tracks that list has."""
+    if playlist_id is None:
+        name, base = ALL_TRACKS, library.all_tracks()
+    else:
+        if playlist_id not in library.playlists:
+            raise HTTPException(status_code=404, detail="Unknown playlist")
+        name, base = library.playlists[playlist_id].name, library.playlist_tracks(playlist_id)
+    matched = search(base, query)
+    positions = [matched[i] for i in sorted_positions([base[i] for i in matched], sort, descending)]
+    return name, [base[p] for p in positions], positions, len(base)
+
+
+def list_json(name: str, tracks: list[Track], positions: list[int], total: int, **extra) -> dict:
+    return {
+        "name": name,
+        "total": total,
+        "tracks": [{**track.to_json(), "position": position} for track, position in zip(tracks, positions)],
+        **extra,
+    }
 
 
 class MasterBpmRequest(BaseModel):
@@ -124,40 +152,29 @@ def create_app(engine: Engine, watcher: LibraryWatcher) -> FastAPI:
             "connected": True,
             "root": str(library.root),
             "name": library.root.name,
+            "track_count": len(library.tracks),
             "playlists": [node.to_json() for node in library.tree],
         }
 
+    @app.get("/api/tracks")
+    def get_tracks(query: str = "", sort: SortName = "order", descending: bool = False) -> dict:
+        name, tracks, positions, total = track_list(require_library(), None, query, sort, descending)
+        return list_json(name, tracks, positions, total, id=None, query=query, sort=sort, descending=descending)
+
     @app.get("/api/playlists/{playlist_id}")
-    def get_playlist(playlist_id: int, sort: SortName = "order", descending: bool = False) -> dict:
-        library = require_library()
-        if playlist_id not in library.playlists:
-            raise HTTPException(status_code=404, detail="Unknown playlist")
-        node = library.playlists[playlist_id]
-        tracks = library.playlist_tracks(playlist_id)
-        return {
-            "id": node.id,
-            "name": node.name,
-            "sort": sort,
-            "descending": descending,
-            "tracks": [{**tracks[p].to_json(), "position": p} for p in sorted_positions(tracks, sort, descending)],
-        }
+    def get_playlist(playlist_id: int, query: str = "", sort: SortName = "order", descending: bool = False) -> dict:
+        name, tracks, positions, total = track_list(require_library(), playlist_id, query, sort, descending)
+        return list_json(name, tracks, positions, total, id=playlist_id, query=query, sort=sort, descending=descending)
 
     @app.post("/api/play")
     def play(request: PlayRequest) -> dict:
-        library = require_library()
-        if request.playlist_id not in library.playlists:
-            raise HTTPException(status_code=404, detail="Unknown playlist")
-        tracks = library.playlist_tracks(request.playlist_id)
+        name, tracks, positions, _ = track_list(
+            require_library(), request.playlist_id, request.query, request.sort, request.descending
+        )
         if not 0 <= request.index < len(tracks):
             raise HTTPException(status_code=400, detail="Track index out of range")
-        positions = sorted_positions(tracks, request.sort, request.descending)
-        engine.play(
-            [tracks[p] for p in positions],
-            request.index,
-            request.playlist_id,
-            library.playlists[request.playlist_id].name,
-            positions=positions,
-        )
+        label = f"{name} · “{request.query.strip()}”" if request.query.strip() else name
+        engine.play(tracks, request.index, request.playlist_id, label, positions=positions)
         return engine.state()
 
     @app.post("/api/pause")
@@ -192,7 +209,7 @@ def create_app(engine: Engine, watcher: LibraryWatcher) -> FastAPI:
         if track is None:
             raise HTTPException(status_code=404, detail="Unknown track")
         playlist = library.playlists.get(request.playlist_id) if request.playlist_id is not None else None
-        engine.queue_add(track, playlist.name if playlist else "", request.position)
+        engine.queue_add(track, playlist.name if playlist else ALL_TRACKS, request.position)
         return engine.state()
 
     @app.post("/api/queue/{queue_id}/move")

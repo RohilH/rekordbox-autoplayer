@@ -392,6 +392,7 @@ class Engine:
                 playlist_id=session.playlist_id,
                 playlist_name=session.playlist_name,
                 failed=[session.positions[i] for i in session.failed],
+                failed_track_ids=[session.tracks[i].id for i in session.failed],
                 then_tracks=[t.to_json() for t in session.tracks[continues_at : continues_at + 5]],
             )
             if current is None:

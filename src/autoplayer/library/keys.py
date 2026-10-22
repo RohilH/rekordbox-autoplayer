@@ -34,23 +34,19 @@ def camelot_order(key: str) -> tuple[int, int]:
 
 
 SORTS = {
-    "order": lambda track: (),
+    "title": lambda track: (track.title.casefold(),),
+    "artist": lambda track: (track.artist.casefold(),),
     "bpm": lambda track: (track.bpm,),
     "key": lambda track: camelot_order(track.key),
 }
 
 
 def sorted_positions(tracks: list[Track], sort: str = "order", descending: bool = False) -> list[int]:
-    """Playlist positions of `tracks` in the requested order. Ties keep playlist order in either direction,
-    and tracks with no known key stay at the end."""
-    primary = SORTS[sort]
-    sign = -1 if descending else 1
-
-    def order(position: int) -> tuple:
-        values = primary(tracks[position])
-        unknown = sort == "key" and values == UNKNOWN_KEY
-        if sort == "order":
-            return (sign * position,)
-        return (unknown, *(sign * v for v in values), position)
-
-    return sorted(range(len(tracks)), key=order)
+    """Positions of `tracks` in the requested order. Ties keep their original order in either direction
+    (Python's sort stays stable when reversed), and tracks with no key or no text for the field go last."""
+    if sort == "order":
+        return sorted(range(len(tracks)), reverse=descending)
+    value = SORTS[sort]
+    ranked = sorted(range(len(tracks)), key=lambda p: value(tracks[p]), reverse=descending)
+    missing = {p for p in ranked if value(tracks[p]) in (UNKNOWN_KEY, ("",))}
+    return [p for p in ranked if p not in missing] + [p for p in ranked if p in missing]

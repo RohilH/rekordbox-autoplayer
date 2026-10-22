@@ -64,6 +64,10 @@ class Library:
     playlists: dict[int, PlaylistNode]
     tree: list[PlaylistNode]
 
+    def all_tracks(self) -> list[Track]:
+        """Every track on the USB, in the order rekordbox added them."""
+        return [self.tracks[track_id] for track_id in sorted(self.tracks)]
+
     def playlist_tracks(self, playlist_id: int) -> list[Track]:
         node = self.playlists[playlist_id]
         return [self.tracks[track_id] for track_id in node.track_ids if track_id in self.tracks]
