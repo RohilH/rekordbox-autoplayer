@@ -70,8 +70,43 @@ async function loadLibrary() {
   $("playlists").replaceChildren(renderTree(library.playlists));
 }
 
+const SORTS = ["order", "bpm", "key"];
+
+// Remembered per browser; falls back to playlist order if storage is unavailable.
+function loadSort() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("trackSort"));
+    if (SORTS.includes(saved?.sort)) return { sort: saved.sort, descending: Boolean(saved.descending) };
+  } catch {}
+  return { sort: "order", descending: false };
+}
+
+let trackSort = loadSort();
+
+function setSort(sort) {
+  const descending = trackSort.sort === sort ? !trackSort.descending : false;
+  trackSort = { sort, descending };
+  try {
+    localStorage.setItem("trackSort", JSON.stringify(trackSort));
+  } catch {}
+  if (shownPlaylist) showPlaylist(shownPlaylist.id);
+}
+
+function renderSortHeaders() {
+  document.querySelectorAll("#tracks th button.sort").forEach((button) => {
+    const active = button.dataset.sort === trackSort.sort;
+    button.parentElement.setAttribute("aria-sort", active ? (trackSort.descending ? "descending" : "ascending") : "none");
+  });
+}
+
+document.querySelectorAll("#tracks th button.sort").forEach((button) =>
+  button.addEventListener("click", () => setSort(button.dataset.sort)),
+);
+
 async function showPlaylist(id) {
-  const playlist = await api("GET", `/api/playlists/${id}`);
+  const query = new URLSearchParams({ sort: trackSort.sort, descending: trackSort.descending });
+  const playlist = await api("GET", `/api/playlists/${id}?${query}`);
+  renderSortHeaders();
   shownPlaylist = playlist;
   document.querySelectorAll("nav button.selected").forEach((b) => b.classList.remove("selected"));
   document.querySelector(`nav button[data-playlist-id="${id}"]`)?.classList.add("selected");
@@ -83,9 +118,9 @@ async function showPlaylist(id) {
 
   const rows = playlist.tracks.map((track, index) => {
     const tr = document.createElement("tr");
-    tr.dataset.index = index;
+    tr.dataset.index = track.position;
     tr.dataset.trackId = track.id;
-    const cells = [index + 1, track.title, track.artist, track.bpm.toFixed(1), track.key, formatTime(track.duration_s)];
+    const cells = [track.position + 1, track.title, track.artist, track.bpm.toFixed(1), track.key, formatTime(track.duration_s)];
     cells.forEach((value, i) => {
       const td = document.createElement("td");
       td.textContent = value;
@@ -107,7 +142,13 @@ async function showPlaylist(id) {
 }
 
 function play(index) {
-  if (shownPlaylist) api("POST", "/api/play", { playlist_id: shownPlaylist.id, index });
+  if (!shownPlaylist) return;
+  api("POST", "/api/play", {
+    playlist_id: shownPlaylist.id,
+    index,
+    sort: shownPlaylist.sort,
+    descending: shownPlaylist.descending,
+  });
 }
 
 function highlightRows(state) {
@@ -173,22 +214,6 @@ function setQueuePanel(open) {
   try {
     localStorage.setItem("queuePanel", open ? "open" : "closed");
   } catch {}
-}
-
-const playlistCache = new Map();
-
-function playlistTracks(id) {
-  if (id == null) return null;
-  if (!playlistCache.has(id)) {
-    playlistCache.set(id, null);
-    api("GET", `/api/playlists/${id}`)
-      .then((playlist) => {
-        playlistCache.set(id, playlist.tracks);
-        renderQueue(lastState);
-      })
-      .catch(() => playlistCache.delete(id));
-  }
-  return playlistCache.get(id);
 }
 
 function queueItem(entry, position, total, nextUp) {
@@ -270,9 +295,7 @@ function renderQueue(state) {
     $("queue-list").replaceChildren(...upNext.map((entry, i) => queueItem(entry, i, upNext.length, entry.id === nextUpId)));
   }
 
-  const tracks = playlistTracks(state.playlist_id);
-  const from = state.playlist_continues_at;
-  const then = tracks && from != null ? tracks.slice(from, from + 5) : [];
+  const then = state.then_tracks ?? [];
   $("queue-then").hidden = then.length === 0;
   $("queue-then-title").textContent = upNext.length ? `Then from ${state.playlist_name}` : `Next from ${state.playlist_name}`;
   $("queue-then-list").replaceChildren(

@@ -25,7 +25,15 @@
         </div>
         <table id="tracks" hidden>
           <thead>
-            <tr><th>#</th><th>Title</th><th>Artist</th><th class="num">BPM</th><th>Key</th><th class="num">Time</th><th><span class="visually-hidden">Queue</span></th></tr>
+            <tr>
+              <th aria-sort="ascending"><button class="sort" data-sort="order" title="Sort by playlist order">#</button></th>
+              <th>Title</th>
+              <th>Artist</th>
+              <th class="num" aria-sort="none"><button class="sort" data-sort="bpm" title="Sort by BPM">BPM</button></th>
+              <th aria-sort="none"><button class="sort" data-sort="key" title="Sort by key (Camelot)">Key</button></th>
+              <th class="num">Time</th>
+              <th><span class="visually-hidden">Queue</span></th>
+            </tr>
           </thead>
           <tbody></tbody>
         </table>

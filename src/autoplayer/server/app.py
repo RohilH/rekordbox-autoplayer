@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from autoplayer.audio.engine import Engine
+from autoplayer.library.keys import sorted_positions
 from autoplayer.library.pdb import Library, load_library
 from autoplayer.library.usb import find_usb_roots
 
@@ -60,9 +61,14 @@ class LibraryWatcher:
         self._stop.set()
 
 
+SortName = Literal["order", "bpm", "key"]
+
+
 class PlayRequest(BaseModel):
     playlist_id: int
-    index: int = 0
+    index: int = Field(default=0, description="Position in the playlist as sorted")
+    sort: SortName = "order"
+    descending: bool = False
 
 
 class MasterBpmRequest(BaseModel):
@@ -122,15 +128,18 @@ def create_app(engine: Engine, watcher: LibraryWatcher) -> FastAPI:
         }
 
     @app.get("/api/playlists/{playlist_id}")
-    def get_playlist(playlist_id: int) -> dict:
+    def get_playlist(playlist_id: int, sort: SortName = "order", descending: bool = False) -> dict:
         library = require_library()
         if playlist_id not in library.playlists:
             raise HTTPException(status_code=404, detail="Unknown playlist")
         node = library.playlists[playlist_id]
+        tracks = library.playlist_tracks(playlist_id)
         return {
             "id": node.id,
             "name": node.name,
-            "tracks": [track.to_json() for track in library.playlist_tracks(playlist_id)],
+            "sort": sort,
+            "descending": descending,
+            "tracks": [{**tracks[p].to_json(), "position": p} for p in sorted_positions(tracks, sort, descending)],
         }
 
     @app.post("/api/play")
@@ -141,7 +150,14 @@ def create_app(engine: Engine, watcher: LibraryWatcher) -> FastAPI:
         tracks = library.playlist_tracks(request.playlist_id)
         if not 0 <= request.index < len(tracks):
             raise HTTPException(status_code=400, detail="Track index out of range")
-        engine.play(tracks, request.index, request.playlist_id, library.playlists[request.playlist_id].name)
+        positions = sorted_positions(tracks, request.sort, request.descending)
+        engine.play(
+            [tracks[p] for p in positions],
+            request.index,
+            request.playlist_id,
+            library.playlists[request.playlist_id].name,
+            positions=positions,
+        )
         return engine.state()
 
     @app.post("/api/pause")

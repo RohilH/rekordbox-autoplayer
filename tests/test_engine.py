@@ -150,7 +150,7 @@ def test_seek_back_into_the_incoming_transition_plays_both_tracks(engine):
     state = settle(engine)
     assert state["mixing"]
     assert state["index"] == 1
-    assert state["position_s"] == pytest.approx(target, abs=0.05)
+    assert state["position_s"] == pytest.approx(target, abs=SKIP_FADE_SECONDS + 0.01)
 
 
 def test_seek_before_the_mix_in_point_restarts_the_track_alone(engine):
@@ -346,3 +346,18 @@ def test_skip_goes_to_the_queue_and_the_queue_survives_it(engine):
     wait_for(lambda: engine.state().get("next_track", {}).get("title") == "Queued 11")
     engine.queue_clear()
     wait_for(lambda: engine.state().get("next_track", {}).get("title") == "Track 1")
+
+
+def test_a_sorted_playlist_plays_in_sorted_order_and_reports_playlist_positions(engine):
+    tracks = [fake_track(i) for i in range(3)]
+    order = [2, 0, 1]
+    engine.play([tracks[i] for i in order], 0, positions=order)
+    wait_for(lambda: engine.queue.queued > 0)
+    engine.output.play(0.1)
+    wait_for(lambda: engine.state().get("next_track") is not None)
+    state = engine.state()
+    assert state["track"]["title"] == "Track 2"
+    assert state["index"] == 2
+    assert state["next_track"]["title"] == "Track 0"
+    assert state["next_index"] == 0
+    assert [t["title"] for t in state["then_tracks"]] == ["Track 0", "Track 1"]

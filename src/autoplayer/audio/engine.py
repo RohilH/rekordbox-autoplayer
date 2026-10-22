@@ -59,6 +59,7 @@ class Session:
     playlist_id: int | None
     playlist_name: str
     tracks: list[Track]
+    positions: list[int]
     timeline: Timeline
     first: Entry
     playlist_from: int
@@ -123,12 +124,24 @@ class Engine:
         playlist_id: int | None = None,
         playlist_name: str = "",
         start_src: float | None = None,
+        positions: list[int] | None = None,
     ) -> None:
-        self._start(tracks, Entry(tracks[index], playlist_index=index), index + 1, playlist_id, playlist_name, start_src)
+        """Play `tracks` from `index`. When they're a sorted playlist, `positions` gives each one's place in
+        the playlist itself, which is how the UI refers to tracks."""
+        self._start(
+            tracks,
+            positions or list(range(len(tracks))),
+            Entry(tracks[index], playlist_index=index),
+            index + 1,
+            playlist_id,
+            playlist_name,
+            start_src,
+        )
 
     def _start(
         self,
         tracks: list[Track],
+        positions: list[int],
         first: Entry,
         playlist_from: int,
         playlist_id: int | None,
@@ -143,6 +156,7 @@ class Engine:
                 playlist_id=playlist_id,
                 playlist_name=playlist_name,
                 tracks=tracks,
+                positions=positions,
                 timeline=Timeline(self.settings),
                 first=first,
                 playlist_from=playlist_from,
@@ -161,7 +175,9 @@ class Engine:
             playlist_from = entry.playlist_index + 1
         else:
             playlist_from = self._playlist_next(session, session.sequence[:sequence_index])
-        self._start(session.tracks, entry, playlist_from, session.playlist_id, session.playlist_name, start_src)
+        self._start(
+            session.tracks, session.positions, entry, playlist_from, session.playlist_id, session.playlist_name, start_src
+        )
 
     def stop(self) -> None:
         with self._lock:
@@ -368,12 +384,15 @@ class Engine:
             speed = session.clock.speed_at(played)
             current = self._current_placement(session)
             upcoming = self._next_entry(session)
+            # Count from the current track, so a planned-but-unstarted playlist track still shows as coming up.
+            heard = session.sequence[: current.item.index + 1] if current else session.sequence
+            continues_at = self._playlist_next(session, heard)
             base.update(
                 status="paused" if self.output.paused else "playing",
                 playlist_id=session.playlist_id,
                 playlist_name=session.playlist_name,
-                failed=session.failed,
-                playlist_continues_at=self._playlist_next(session, session.sequence),
+                failed=[session.positions[i] for i in session.failed],
+                then_tracks=[t.to_json() for t in session.tracks[continues_at : continues_at + 5]],
             )
             if current is None:
                 base["status"] = "loading" if upcoming is not None else "finished"
@@ -386,8 +405,9 @@ class Engine:
             src_s = current.src_seconds_at
             overlapping = [p for p in session.timeline.placements if p.out_start <= tau < p.out_end]
             rate = float(current.curve.rate_at(tau)) * speed
+            position = lambda e: session.positions[e.playlist_index] if e and e.playlist_index is not None else None
             base.update(
-                index=entry.playlist_index,
+                index=position(entry),
                 from_queue=entry.queue_id is not None,
                 track=entry.track.to_json(),
                 next_track=next_entry.track.to_json() if next_entry else None,
@@ -400,7 +420,7 @@ class Engine:
                 bass_swapped=current.lows_in is not None and tau >= current.lows_in.end,
                 mixing=len(overlapping) > 1,
                 beatmatched=current.beatmatched,
-                next_index=next_entry.playlist_index if next_entry else None,
+                next_index=position(next_entry),
                 next_beatmatched=following.beatmatched if following else None,
                 cues=current.cues,
                 next_cues=following.cues if following else None,

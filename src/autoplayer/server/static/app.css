@@ -98,6 +98,20 @@ button.mini {
 button.mini:hover { background: var(--line); color: var(--text); }
 button.mini svg { width: 14px; height: 14px; fill: currentColor; }
 
+th button.sort {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+th button.sort:hover { color: var(--text); }
+th[aria-sort="ascending"] button.sort, th[aria-sort="descending"] button.sort { color: var(--text); }
+th[aria-sort="ascending"] button.sort::after { content: " ▲"; font-size: 9px; color: var(--accent); }
+th[aria-sort="descending"] button.sort::after { content: " ▼"; font-size: 9px; color: var(--accent); }
+
 td.row-actions { width: 64px; text-align: right; white-space: nowrap; }
 td.row-actions button { opacity: 0; display: inline-grid; vertical-align: middle; }
 tbody tr:hover td.row-actions button, td.row-actions button:focus-visible { opacity: 1; }
