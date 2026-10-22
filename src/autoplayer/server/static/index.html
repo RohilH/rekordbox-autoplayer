@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Autoplayer</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Autoplayer</h1>
+      <span id="usb" class="pill">Looking for USB…</span>
+    </header>
+
+    <div class="layout">
+      <nav id="playlists" aria-label="Playlists"></nav>
+
+      <main>
+        <div class="playlist-header">
+          <h2 id="playlist-name">Pick a playlist</h2>
+          <button id="play-all" class="primary" hidden>Play from start</button>
+        </div>
+        <table id="tracks" hidden>
+          <thead>
+            <tr><th>#</th><th>Title</th><th>Artist</th><th class="num">BPM</th><th>Key</th><th class="num">Time</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p id="empty" class="muted">Plug in a USB exported from rekordbox, then choose a playlist on the left.</p>
+      </main>
+    </div>
+
+    <footer>
+      <div class="now">
+        <div id="now-title">Nothing playing</div>
+        <div id="now-meta" class="muted"></div>
+        <div id="seek" class="seek" role="slider" aria-label="Position in track" tabindex="0">
+          <div class="progress">
+            <div id="progress-bar"></div>
+            <div id="zone-skipped-start" class="zone skipped"></div>
+            <div id="zone-mix-in" class="zone mix"></div>
+            <div id="zone-mix-out" class="zone mix"></div>
+            <div id="zone-skipped-end" class="zone skipped"></div>
+          </div>
+        </div>
+        <div class="times muted"><span id="pos">0:00</span><span id="mix-status"></span><span id="dur">0:00</span></div>
+        <div id="output-device" class="muted output"></div>
+        <div class="legend muted"><span class="mix">Transition</span><span class="skipped">Not played in the mix</span></div>
+      </div>
+      <div class="tempo" role="group" aria-label="Master BPM">
+        <button id="bpm-down" class="icon small" aria-label="Decrease BPM by 1" title="−1 BPM" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="2" rx="1" /></svg>
+        </button>
+        <div class="bpm-readout">
+          <input id="bpm-input" type="text" inputmode="decimal" aria-label="Master BPM" title="Type a BPM and press Enter" value="—" />
+          <span id="bpm-label" class="muted">BPM</span>
+        </div>
+        <button id="bpm-up" class="icon small" aria-label="Increase BPM by 1" title="+1 BPM" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="2" rx="1" /><rect x="11" y="5" width="2" height="14" rx="1" /></svg>
+        </button>
+        <button id="bpm-reset" class="link" title="Let each track play at its own tempo" hidden>Reset</button>
+      </div>
+      <div class="controls">
+        <button id="toggle" class="icon primary" aria-label="Pause" title="Pause" disabled>
+          <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+          <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" /></svg>
+        </button>
+        <button id="skip" class="icon" aria-label="Skip to next track" title="Skip to next track" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.2v11.6a1 1 0 0 0 1.53.85L15 13.2V17a1 1 0 0 0 2 0V7a1 1 0 0 0-2 0v3.8L6.53 5.35A1 1 0 0 0 5 6.2z" /></svg>
+        </button>
+        <button id="stop" class="icon" aria-label="Stop" title="Stop" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+        </button>
+      </div>
+      <form id="settings" class="settings">
+        <label>Mix
+          <select name="mode">
+            <option value="beatmatch">Beat-matched</option>
+            <option value="timed">Crossfade</option>
+            <option value="off">Gapless</option>
+          </select>
+        </label>
+        <label>Overlap bars <input name="overlap_bars" type="number" min="1" max="64" /></label>
+        <label>Ease-back bars <input name="ease_bars" type="number" min="0" max="64" /></label>
+        <label>Master tempo <input name="key_lock" type="checkbox" /></label>
+      </form>
+    </footer>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
