@@ -414,8 +414,7 @@ class Timeline:
         start = int(round(max(a_end, not_before)))
         prev.out_end = min(prev.out_end, start)
         b_start = audible_bounds(item.audio)[0]
-        curve = RateCurve([(start, 1.0)], anchor_out=start, anchor_src=b_start)
-        return Placement(item, curve, start, start + int(item.audio.shape[0] - b_start))
+        return self._held(Placement(item, self._entry_curve(prev, item, start, b_start), start, 0))
 
     def _intro_start(self, item: LoadedTrack) -> float:
         cue = _ordered_cues(hot_cue_beats(item.analysis), "ABC").get("A")
@@ -432,17 +431,33 @@ class Timeline:
         b_start = self._intro_start(item)
         prev.out_end = int(np.ceil(start + fade_len))
         prev.fade_out = Envelope.equal_power(start, fade_len, rising=False)
-        curve = RateCurve([(start, 1.0)], anchor_out=start, anchor_src=b_start)
+        curve = self._entry_curve(prev, item, start, b_start)
         out_start = int(np.floor(start))
-        return Placement(
+        return self._held(Placement(
             item,
             curve,
             out_start,
-            out_start + int(item.audio.shape[0] - b_start) + 1,
+            0,
             fade_in=Envelope.equal_power(start, fade_len, rising=True),
             switch_at=start + fade_len / 2,
             overlap_in_end=start + fade_len,
-        )
+        ))
+
+    def _entry_curve(self, prev: Placement, item: LoadedTrack, start: float, src: float) -> RateCurve:
+        """Rate for a track that comes in without beat matching: its own tempo, or with a master BPM set,
+        the tempo the mix is held at (at half or double time if that's closer)."""
+        rate = 1.0
+        if self.settings.hold_tempo and item.bpm:
+            held = prev.item.bpm * prev.curve.final_rate / item.bpm
+            rate = min((held, held / 2, held * 2), key=lambda r: abs(np.log(r)))
+        return RateCurve([(start, rate)], anchor_out=start, anchor_src=src)
+
+    def _held(self, placement: Placement) -> Placement:
+        """Finish a non-beat-matched placement: its end on the timeline, and key lock if it's off tempo."""
+        placement.out_end = int(np.ceil(placement.out_time_for_src(placement.item.audio.shape[0])))
+        if self.settings.key_lock and abs(placement.curve.final_rate - 1) >= KEY_LOCK_MIN_TEMPO_CHANGE:
+            placement.key_lock_end = placement.out_end
+        return placement
 
     def _place_beatmatched(self, prev: Placement, item: LoadedTrack, not_before: int) -> Placement | None:
         a_beats, b_beats = prev.item.analysis.beats, item.analysis.beats

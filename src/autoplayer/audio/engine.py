@@ -30,14 +30,39 @@ RETIME_CROSSFADE_FRAMES = 2048
 INTERP_MARGIN = 2
 
 
+@dataclass(frozen=True)
+class QueuedTrack:
+    id: int
+    track: Track
+    playlist_name: str = ""
+
+    def to_json(self) -> dict:
+        return {"id": self.id, "track": self.track.to_json(), "playlist_name": self.playlist_name}
+
+
+@dataclass(frozen=True)
+class Entry:
+    """A track in a session's play sequence, and where it came from: a playlist position or the queue."""
+
+    track: Track
+    playlist_index: int | None = None
+    queue_id: int | None = None
+
+
 @dataclass
 class Session:
+    """One continuous mix. `tracks` is the playlist it plays from; `sequence` is every track it has placed,
+    in order, with placements indexing into it. The next track is worked out fresh each time (see
+    `Engine._next_entry`), so editing the queue just means trimming the sequence back."""
+
     generation: int
     playlist_id: int | None
     playlist_name: str
     tracks: list[Track]
     timeline: Timeline
-    next_to_load: int
+    first: Entry
+    playlist_from: int
+    sequence: list[Entry] = field(default_factory=list)
     clock: MixClock = field(default_factory=MixClock)
     feed_pos: int = 0
     corrector: ChunkedPitchCorrector | None = None
@@ -45,10 +70,6 @@ class Session:
     start_src: float | None = None
     focus: Placement | None = None
     failed: list[int] = field(default_factory=list)
-
-    @property
-    def more_to_load(self) -> bool:
-        return self.next_to_load < len(self.tracks)
 
     def tau(self, t: float) -> float:
         return float(self.clock.tau(t))
@@ -76,6 +97,8 @@ class Engine:
         self._session: Session | None = None
         self._generation = 0
         self.master_bpm: float | None = None
+        self.up_next: list[QueuedTrack] = []
+        self._next_queue_id = 1
         self._cache: OrderedDict[int, LoadedTrack] = OrderedDict()
         self._running = True
         self._loading = False
@@ -101,16 +124,28 @@ class Engine:
         playlist_name: str = "",
         start_src: float | None = None,
     ) -> None:
+        self._start(tracks, Entry(tracks[index], playlist_index=index), index + 1, playlist_id, playlist_name, start_src)
+
+    def _start(
+        self,
+        tracks: list[Track],
+        first: Entry,
+        playlist_from: int,
+        playlist_id: int | None,
+        playlist_name: str,
+        start_src: float | None = None,
+    ) -> None:
         with self._lock:
             self._generation += 1
-            speed = self.master_bpm / tracks[index].bpm if self.master_bpm and tracks[index].bpm else 1.0
+            speed = self.master_bpm / first.track.bpm if self.master_bpm and first.track.bpm else 1.0
             session = Session(
                 generation=self._generation,
                 playlist_id=playlist_id,
                 playlist_name=playlist_name,
                 tracks=tracks,
                 timeline=Timeline(self.settings),
-                next_to_load=index,
+                first=first,
+                playlist_from=playlist_from,
                 clock=MixClock(speed),
                 start_src=start_src,
             )
@@ -119,6 +154,14 @@ class Engine:
             self._restart_pipeline(session, 0)
             self.output.paused = False
             self._wake.notify_all()
+
+    def _restart_at(self, session: Session, sequence_index: int, entry: Entry, start_src: float | None = None) -> None:
+        """A new session that begins with `entry`, carrying on through the playlist the way this one would."""
+        if entry.playlist_index is not None:
+            playlist_from = entry.playlist_index + 1
+        else:
+            playlist_from = self._playlist_next(session, session.sequence[:sequence_index])
+        self._start(session.tracks, entry, playlist_from, session.playlist_id, session.playlist_name, start_src)
 
     def stop(self) -> None:
         with self._lock:
@@ -139,11 +182,17 @@ class Engine:
             if session is None:
                 return
             current = self._current_placement(session)
-            next_index = (current.item.index + 1) if current else session.next_to_load
-            if next_index >= len(session.tracks):
+            following = self._placement_after(session, current) if current else None
+            if following is not None:
+                index = following.item.index
+                target = session.sequence[index]
+            else:
+                index = current.item.index + 1 if current else len(session.sequence)
+                target = self._next_entry(session, upto=index)
+            if target is None:
                 self.stop()
                 return
-            self.play(session.tracks, next_index, session.playlist_id, session.playlist_name)
+            self._restart_at(session, index, target)
 
     def seek(self, position_s: float) -> None:
         """Jump to `position_s` in the current track, on the planned mix's timeline.
@@ -162,7 +211,7 @@ class Engine:
             src = min(max(position_s * SAMPLE_RATE, 0.0), current.item.audio.shape[0] - 1.0)
             if src < float(current.curve.src_position(current.out_start)):
                 paused = self.output.paused
-                self.play(session.tracks, current.item.index, session.playlist_id, session.playlist_name, src)
+                self._restart_at(session, current.item.index, session.sequence[current.item.index], src)
                 self.output.paused = paused
                 return
             target = min(current.out_time_for_src(src), current.out_end - 1)
@@ -190,10 +239,73 @@ class Engine:
             session.timeline.settings = self.settings
             at = self._retime_point()
             if mode_changed:
-                first_dropped = session.timeline.unplan_after(session.tau(at + PLAN_MARGIN_FRAMES))
-                if first_dropped is not None:
-                    session.next_to_load = first_dropped
+                self._unplan_after(session, session.tau(at + PLAN_MARGIN_FRAMES))
             self._retime(session, at, speed=self._master_speed(session))
+
+    def queue_add(self, track: Track, playlist_name: str = "", position: int | None = None) -> QueuedTrack:
+        """Queue `track` to be mixed in after what's playing, ahead of the rest of the playlist."""
+        with self._lock:
+            queued = QueuedTrack(self._next_queue_id, track, playlist_name)
+            self._next_queue_id += 1
+            at = len(self.up_next) if position is None else max(0, min(position, len(self.up_next)))
+            self.up_next.insert(at, queued)
+            self._queue_changed()
+            return queued
+
+    def queue_remove(self, queue_id: int) -> None:
+        with self._lock:
+            self.up_next = [q for q in self.up_next if q.id != queue_id]
+            self._queue_changed()
+
+    def queue_move(self, queue_id: int, position: int) -> None:
+        with self._lock:
+            moving = next((q for q in self.up_next if q.id == queue_id), None)
+            if moving is None:
+                return
+            rest = [q for q in self.up_next if q.id != queue_id]
+            rest.insert(max(0, min(position, len(rest))), moving)
+            self.up_next = rest
+            self._queue_changed()
+
+    def queue_clear(self) -> None:
+        with self._lock:
+            self.up_next = []
+            self._queue_changed()
+
+    def _queue_changed(self) -> None:
+        """Replan the next transition if the queue now puts a different track there, as long as it hasn't
+        started (within a moment of starting it's too late to load another track in its place)."""
+        session = self._session
+        if session is None:
+            return
+        horizon = session.tau(self._retime_point() + PLAN_MARGIN_FRAMES)
+        upcoming = [p for p in session.timeline.placements if p.out_start > horizon]
+        if upcoming:
+            index = upcoming[0].item.index
+            if session.sequence[index] != self._next_entry(session, upto=index):
+                self._unplan_after(session, horizon)
+        self._wake.notify_all()
+
+    def _unplan_after(self, session: Session, tau: float) -> None:
+        first_dropped = session.timeline.unplan_after(tau)
+        if first_dropped is not None:
+            del session.sequence[first_dropped:]
+
+    def _next_entry(self, session: Session, upto: int | None = None) -> Entry | None:
+        """What plays after the first `upto` tracks of the sequence: the first queued track not already
+        placed, otherwise the playlist from where it left off."""
+        placed = session.sequence if upto is None else session.sequence[:upto]
+        if not placed:
+            return session.first
+        placed_ids = {e.queue_id for e in placed if e.queue_id is not None}
+        for queued in self.up_next:
+            if queued.id not in placed_ids:
+                return Entry(queued.track, queue_id=queued.id)
+        index = self._playlist_next(session, placed)
+        return Entry(session.tracks[index], playlist_index=index) if index < len(session.tracks) else None
+
+    def _playlist_next(self, session: Session, placed: list[Entry]) -> int:
+        return max([session.playlist_from] + [e.playlist_index + 1 for e in placed if e.playlist_index is not None])
 
     def update_settings(self, **changes) -> MixSettings:
         with self._lock:
@@ -247,6 +359,7 @@ class Engine:
                 "output_device": self.output.device_name,
                 "playback_stats": self.queue.stats.to_json(),
                 "master_bpm": self.master_bpm,
+                "up_next": [q.to_json() for q in self.up_next],
             }
             if session is None:
                 return base
@@ -254,23 +367,31 @@ class Engine:
             tau = session.tau(played)
             speed = session.clock.speed_at(played)
             current = self._current_placement(session)
+            upcoming = self._next_entry(session)
             base.update(
                 status="paused" if self.output.paused else "playing",
                 playlist_id=session.playlist_id,
                 playlist_name=session.playlist_name,
                 failed=session.failed,
+                playlist_continues_at=self._playlist_next(session, session.sequence),
             )
             if current is None:
-                base["status"] = "loading" if session.more_to_load else "finished"
+                base["status"] = "loading" if upcoming is not None else "finished"
                 return base
-            track = session.tracks[current.item.index]
+            entry = session.sequence[current.item.index]
             following = self._placement_after(session, current)
+            next_entry = session.sequence[following.item.index] if following else upcoming
+            if following is None and current.item.index + 1 < len(session.sequence):
+                next_entry = self._next_entry(session, upto=current.item.index + 1)
             src_s = current.src_seconds_at
             overlapping = [p for p in session.timeline.placements if p.out_start <= tau < p.out_end]
             rate = float(current.curve.rate_at(tau)) * speed
             base.update(
-                index=current.item.index,
-                track=track.to_json(),
+                index=entry.playlist_index,
+                from_queue=entry.queue_id is not None,
+                track=entry.track.to_json(),
+                next_track=next_entry.track.to_json() if next_entry else None,
+                next_from_queue=next_entry.queue_id is not None if next_entry else None,
                 position_s=current.src_seconds_at(tau),
                 duration_s=current.item.audio.shape[0] / SAMPLE_RATE,
                 tempo_change=rate - 1,
@@ -279,7 +400,7 @@ class Engine:
                 bass_swapped=current.lows_in is not None and tau >= current.lows_in.end,
                 mixing=len(overlapping) > 1,
                 beatmatched=current.beatmatched,
-                next_index=following.item.index if following else None,
+                next_index=next_entry.playlist_index if next_entry else None,
                 next_beatmatched=following.beatmatched if following else None,
                 cues=current.cues,
                 next_cues=following.cues if following else None,
@@ -362,9 +483,13 @@ class Engine:
         finished = min(session.tau(session.feed_pos), session.tau(max(self.queue.played, 0)))
         while len(placements) > 2 and placements[1].out_end < finished:
             placements.pop(0)
+        playing = session.tau(max(self.queue.played, 0))
+        started = {session.sequence[p.item.index].queue_id for p in placements if p.out_start <= playing}
+        if started & {q.id for q in self.up_next}:
+            self.up_next = [q for q in self.up_next if q.id not in started]
 
     def _needs_track(self, session: Session) -> bool:
-        if not session.more_to_load:
+        if self._next_entry(session) is None:
             return False
         placements = session.timeline.placements
         if not placements:
@@ -381,23 +506,30 @@ class Engine:
                 if session is None or not self._needs_track(session):
                     self._wake.wait(timeout=0.1)
                     continue
-                index = session.next_to_load
-                track = session.tracks[index]
+                entry = self._next_entry(session)
+                index = len(session.sequence)
                 generation = session.generation
                 self._loading = True
             try:
-                item = self._load_cached(track, index)
+                item = self._load_cached(entry.track, index)
             except Exception:
-                log.exception("Could not load %s", track.audio_path)
+                log.exception("Could not load %s", entry.track.audio_path)
                 item = None
             with self._lock:
                 self._loading = False
                 session = self._session
-                if session is None or session.generation != generation:
+                if (
+                    session is None
+                    or session.generation != generation
+                    or len(session.sequence) != index
+                    or self._next_entry(session) != entry
+                ):
                     continue
-                session.next_to_load = index + 1
+                session.sequence.append(entry)
                 if item is None:
-                    session.failed.append(index)
+                    if entry.playlist_index is not None:
+                        session.failed.append(entry.playlist_index)
+                    self.up_next = [q for q in self.up_next if q.id != entry.queue_id]
                     continue
                 if session.timeline.placements:
                     not_before = int(session.tau(session.feed_pos + PLAN_MARGIN_FRAMES))

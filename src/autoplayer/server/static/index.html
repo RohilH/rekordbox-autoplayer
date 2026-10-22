@@ -10,9 +10,12 @@
     <header>
       <h1>Autoplayer</h1>
       <span id="usb" class="pill">Looking for USB…</span>
+      <button id="queue-toggle" class="queue-toggle" aria-controls="queue-panel" aria-expanded="true">
+        Up next <span id="queue-count" class="badge" hidden>0</span>
+      </button>
     </header>
 
-    <div class="layout">
+    <div id="layout" class="layout queue-open">
       <nav id="playlists" aria-label="Playlists"></nav>
 
       <main>
@@ -22,12 +25,31 @@
         </div>
         <table id="tracks" hidden>
           <thead>
-            <tr><th>#</th><th>Title</th><th>Artist</th><th class="num">BPM</th><th>Key</th><th class="num">Time</th></tr>
+            <tr><th>#</th><th>Title</th><th>Artist</th><th class="num">BPM</th><th>Key</th><th class="num">Time</th><th><span class="visually-hidden">Queue</span></th></tr>
           </thead>
           <tbody></tbody>
         </table>
         <p id="empty" class="muted">Plug in a USB exported from rekordbox, then choose a playlist on the left.</p>
       </main>
+
+      <aside id="queue-panel" aria-label="Up next">
+        <section>
+          <h3>Now playing</h3>
+          <div id="queue-now" class="queue-now muted">Nothing playing</div>
+        </section>
+        <section>
+          <div class="queue-heading">
+            <h3>Up next</h3>
+            <button id="queue-clear" class="link" hidden>Clear</button>
+          </div>
+          <ol id="queue-list" class="queue-list"></ol>
+          <p id="queue-empty" class="muted queue-hint">Nothing queued. Use <strong>+</strong> on any track to mix it in next, from any playlist.</p>
+        </section>
+        <section id="queue-then" hidden>
+          <h3 id="queue-then-title">Then</h3>
+          <ol id="queue-then-list" class="queue-list then"></ol>
+        </section>
+      </aside>
     </div>
 
     <footer>

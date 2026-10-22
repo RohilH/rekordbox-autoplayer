@@ -200,7 +200,7 @@ def test_master_bpm_holds_through_the_next_transition(engine):
     state = started(engine)
     engine.set_master_bpm(122)
     settle(engine)
-    wait_for(lambda: engine.state().get("next_index") == 1)
+    wait_for(lambda: engine.state().get("mix_out_start_s") is not None)
     state = engine.state()
     engine.seek(state["play_end_s"] - 0.5)
     settle(engine)
@@ -264,3 +264,85 @@ def test_seeking_works_while_the_next_track_is_still_loading(monkeypatch, engine
     state = settle(engine)
     assert state["position_s"] == pytest.approx(100.0, abs=0.1)
     release.set()
+
+
+def test_tracks_coming_in_without_a_beat_match_hold_the_master_bpm(engine):
+    engine.update_settings(mode="off")
+    started(engine)
+    engine.set_master_bpm(122)
+    settle(engine)
+    state = engine.state()
+    wait_for(lambda: engine._session and len(engine._session.timeline.placements) > 1)
+    engine.seek(engine.state()["play_end_s"] - 0.5)
+    settle(engine)
+    engine.output.play(1.0)
+    state = engine.state()
+    assert state["index"] == 1
+    assert state["bpm"] == pytest.approx(122, abs=0.05)
+
+
+def other_track(track_id: int, bpm: float = 125) -> Track:
+    return Track(track_id, f"Queued {track_id}", "Elsewhere", "", "5A", bpm, 150, Path(f"/nowhere/q{track_id}.mp3"), None)
+
+
+def planned_titles(engine) -> list[str]:
+    session = engine._session
+    return [session.sequence[p.item.index].track.title for p in session.timeline.placements]
+
+
+def test_a_queued_track_is_mixed_in_next_and_the_playlist_resumes_after_it(engine):
+    started(engine)
+    assert planned_titles(engine) == ["Track 0", "Track 1"]
+    engine.queue_add(other_track(10), "Other playlist")
+    wait_for(lambda: planned_titles(engine) == ["Track 0", "Queued 10"])
+    state = engine.state()
+    assert state["next_track"]["title"] == "Queued 10" and state["next_from_queue"]
+    assert [q["track"]["title"] for q in state["up_next"]] == ["Queued 10"]
+
+    engine.seek(state["play_end_s"] - 0.5)
+    settle(engine)
+    engine.output.play(1.0)
+    state = engine.state()
+    assert state["track"]["title"] == "Queued 10" and state["from_queue"]
+    assert state["up_next"] == []
+    wait_for(lambda: engine.state().get("next_track", {}).get("title") == "Track 1")
+
+
+def test_removing_the_planned_queued_track_puts_the_playlist_back(engine):
+    started(engine)
+    queued = engine.queue_add(other_track(10))
+    wait_for(lambda: planned_titles(engine)[-1] == "Queued 10")
+    engine.queue_remove(queued.id)
+    wait_for(lambda: planned_titles(engine)[-1] == "Track 1")
+
+
+def test_reordering_the_queue_changes_what_comes_next(engine):
+    started(engine)
+    engine.queue_add(other_track(10))
+    later = engine.queue_add(other_track(11))
+    wait_for(lambda: planned_titles(engine)[-1] == "Queued 10")
+    engine.queue_move(later.id, 0)
+    wait_for(lambda: planned_titles(engine)[-1] == "Queued 11")
+    assert [q["track"]["title"] for q in engine.state()["up_next"]] == ["Queued 11", "Queued 10"]
+
+
+def test_adding_to_the_end_of_the_queue_keeps_the_planned_transition(engine):
+    started(engine)
+    engine.queue_add(other_track(10))
+    wait_for(lambda: planned_titles(engine)[-1] == "Queued 10")
+    planned = engine._session.timeline.placements[-1]
+    engine.queue_add(other_track(11))
+    assert engine._session.timeline.placements[-1] is planned
+
+
+def test_skip_goes_to_the_queue_and_the_queue_survives_it(engine):
+    started(engine)
+    engine.queue_add(other_track(10))
+    engine.queue_add(other_track(11))
+    engine.skip()
+    wait_for(lambda: engine.state().get("track", {}).get("title") == "Queued 10")
+    engine.output.play(0.2)
+    assert [q["track"]["title"] for q in engine.state()["up_next"]] == ["Queued 11"]
+    wait_for(lambda: engine.state().get("next_track", {}).get("title") == "Queued 11")
+    engine.queue_clear()
+    wait_for(lambda: engine.state().get("next_track", {}).get("title") == "Track 1")

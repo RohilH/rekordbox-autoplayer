@@ -69,6 +69,16 @@ class MasterBpmRequest(BaseModel):
     bpm: float | None = Field(default=None, ge=40, le=300)
 
 
+class QueueAddRequest(BaseModel):
+    track_id: int
+    playlist_id: int | None = None
+    position: int | None = Field(default=None, ge=0)
+
+
+class QueueMoveRequest(BaseModel):
+    position: int = Field(ge=0)
+
+
 class SeekRequest(BaseModel):
     position_s: float = Field(ge=0)
 
@@ -157,6 +167,31 @@ def create_app(engine: Engine, watcher: LibraryWatcher) -> FastAPI:
     @app.put("/api/master-bpm")
     def put_master_bpm(request: MasterBpmRequest) -> dict:
         engine.set_master_bpm(request.bpm)
+        return engine.state()
+
+    @app.post("/api/queue")
+    def queue_add(request: QueueAddRequest) -> dict:
+        library = require_library()
+        track = library.tracks.get(request.track_id)
+        if track is None:
+            raise HTTPException(status_code=404, detail="Unknown track")
+        playlist = library.playlists.get(request.playlist_id) if request.playlist_id is not None else None
+        engine.queue_add(track, playlist.name if playlist else "", request.position)
+        return engine.state()
+
+    @app.post("/api/queue/{queue_id}/move")
+    def queue_move(queue_id: int, request: QueueMoveRequest) -> dict:
+        engine.queue_move(queue_id, request.position)
+        return engine.state()
+
+    @app.delete("/api/queue/{queue_id}")
+    def queue_remove(queue_id: int) -> dict:
+        engine.queue_remove(queue_id)
+        return engine.state()
+
+    @app.delete("/api/queue")
+    def queue_clear() -> dict:
+        engine.queue_clear()
         return engine.state()
 
     @app.post("/api/stop")

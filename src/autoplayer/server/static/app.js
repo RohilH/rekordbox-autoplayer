@@ -84,6 +84,7 @@ async function showPlaylist(id) {
   const rows = playlist.tracks.map((track, index) => {
     const tr = document.createElement("tr");
     tr.dataset.index = index;
+    tr.dataset.trackId = track.id;
     const cells = [index + 1, track.title, track.artist, track.bpm.toFixed(1), track.key, formatTime(track.duration_s)];
     cells.forEach((value, i) => {
       const td = document.createElement("td");
@@ -91,6 +92,13 @@ async function showPlaylist(id) {
       if (i === 3 || i === 5) td.className = "num";
       tr.append(td);
     });
+    const actions = document.createElement("td");
+    actions.className = "row-actions";
+    actions.append(
+      miniButton(ICONS.playNext, `Play “${track.title}” next`, () => queueTrack(track, 0)),
+      miniButton(ICONS.add, `Add “${track.title}” to the queue`, () => queueTrack(track, null)),
+    );
+    tr.append(actions);
     tr.addEventListener("click", () => play(index));
     return tr;
   });
@@ -105,13 +113,180 @@ function play(index) {
 function highlightRows(state) {
   const samePlaylist = shownPlaylist && state.playlist_id === shownPlaylist.id;
   const failed = new Set(samePlaylist ? state.failed ?? [] : []);
+  const queued = new Set((state.up_next ?? []).map((q) => q.track.id));
   document.querySelectorAll("#tracks tbody tr").forEach((tr) => {
     const index = Number(tr.dataset.index);
-    tr.classList.toggle("current", samePlaylist && index === state.index);
-    tr.classList.toggle("next", samePlaylist && index === state.next_index);
+    tr.classList.toggle("current", samePlaylist && !state.from_queue && index === state.index);
+    tr.classList.toggle("next", samePlaylist && !state.next_from_queue && index === state.next_index);
     tr.classList.toggle("failed", failed.has(index));
+    tr.classList.toggle("queued", queued.has(Number(tr.dataset.trackId)));
   });
 }
+
+const ICONS = {
+  playNext: '<path d="M5 4h14v2H5zM12 8l6 6h-4v6h-4v-6H6z" />',
+  add: '<rect x="11" y="5" width="2" height="14" rx="1" /><rect x="5" y="11" width="14" height="2" rx="1" />',
+  up: '<path d="M12 7l6 7H6z" />',
+  down: '<path d="M12 17l-6-7h12z" />',
+  remove: '<path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z" />',
+};
+
+function miniButton(icon, label, onClick) {
+  const button = document.createElement("button");
+  button.className = "mini";
+  button.type = "button";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg>`;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  return button;
+}
+
+function queueTrack(track, position) {
+  const body = { track_id: track.id, playlist_id: shownPlaylist?.id ?? null, position };
+  api("POST", "/api/queue", body).then(renderState).catch(() => {});
+}
+
+function moveQueued(id, position) {
+  api("POST", `/api/queue/${id}/move`, { position }).then(renderState).catch(() => {});
+}
+
+function removeQueued(id) {
+  api("DELETE", `/api/queue/${id}`).then(renderState).catch(() => {});
+}
+
+// Remembered per browser; the page works the same if storage is unavailable.
+function queuePanelOpen() {
+  try {
+    return localStorage.getItem("queuePanel") !== "closed";
+  } catch {
+    return true;
+  }
+}
+
+function setQueuePanel(open) {
+  $("layout").classList.toggle("queue-open", open);
+  $("queue-toggle").setAttribute("aria-expanded", String(open));
+  try {
+    localStorage.setItem("queuePanel", open ? "open" : "closed");
+  } catch {}
+}
+
+const playlistCache = new Map();
+
+function playlistTracks(id) {
+  if (id == null) return null;
+  if (!playlistCache.has(id)) {
+    playlistCache.set(id, null);
+    api("GET", `/api/playlists/${id}`)
+      .then((playlist) => {
+        playlistCache.set(id, playlist.tracks);
+        renderQueue(lastState);
+      })
+      .catch(() => playlistCache.delete(id));
+  }
+  return playlistCache.get(id);
+}
+
+function queueItem(entry, position, total, nextUp) {
+  const li = document.createElement("li");
+  li.draggable = true;
+  li.dataset.id = entry.id;
+  li.classList.toggle("next-up", nextUp);
+  const handle = document.createElement("span");
+  handle.className = "handle";
+  handle.textContent = "⠿";
+  handle.title = "Drag to reorder";
+  const text = document.createElement("div");
+  text.className = "title";
+  text.textContent = entry.track.title;
+  const sub = document.createElement("span");
+  sub.className = "sub";
+  sub.textContent = [entry.track.artist, `${entry.track.bpm.toFixed(0)} BPM`, entry.playlist_name].filter(Boolean).join(" · ");
+  text.append(sub);
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const up = miniButton(ICONS.up, "Move up", () => moveQueued(entry.id, position - 1));
+  const down = miniButton(ICONS.down, "Move down", () => moveQueued(entry.id, position + 1));
+  up.disabled = position === 0;
+  down.disabled = position === total - 1;
+  actions.append(up, down, miniButton(ICONS.remove, "Remove from queue", () => removeQueued(entry.id)));
+  li.append(handle, text, actions);
+
+  li.addEventListener("dragstart", (event) => {
+    event.dataTransfer.setData("text/plain", String(entry.id));
+    event.dataTransfer.effectAllowed = "move";
+    li.classList.add("dragging");
+  });
+  li.addEventListener("dragend", () => li.classList.remove("dragging"));
+  li.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    const after = event.offsetY > li.offsetHeight / 2;
+    li.classList.toggle("drop-after", after);
+    li.classList.toggle("drop-before", !after);
+  });
+  li.addEventListener("dragleave", () => li.classList.remove("drop-before", "drop-after"));
+  li.addEventListener("drop", (event) => {
+    event.preventDefault();
+    const after = li.classList.contains("drop-after");
+    li.classList.remove("drop-before", "drop-after");
+    const moving = Number(event.dataTransfer.getData("text/plain"));
+    if (!moving || moving === entry.id) return;
+    const rest = (lastState.up_next ?? []).map((q) => q.id).filter((id) => id !== moving);
+    moveQueued(moving, rest.indexOf(entry.id) + (after ? 1 : 0));
+  });
+  return li;
+}
+
+let renderedQueueKey = null;
+
+function renderQueue(state) {
+  const upNext = state.up_next ?? [];
+  $("queue-count").hidden = upNext.length === 0;
+  $("queue-count").textContent = upNext.length;
+  $("queue-clear").hidden = upNext.length === 0;
+  $("queue-empty").hidden = upNext.length > 0;
+
+  const now = $("queue-now");
+  if (state.track) {
+    now.classList.remove("muted");
+    now.textContent = state.track.title;
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    sub.textContent = [state.track.artist, state.from_queue ? "from the queue" : state.playlist_name].filter(Boolean).join(" · ");
+    now.append(sub);
+  } else {
+    now.classList.add("muted");
+    now.textContent = "Nothing playing";
+  }
+
+  const key = JSON.stringify([upNext.map((q) => q.id), state.next_from_queue && state.next_track?.id]);
+  if (key !== renderedQueueKey) {
+    renderedQueueKey = key;
+    const nextUpId = state.next_from_queue ? upNext[0]?.id : null;
+    $("queue-list").replaceChildren(...upNext.map((entry, i) => queueItem(entry, i, upNext.length, entry.id === nextUpId)));
+  }
+
+  const tracks = playlistTracks(state.playlist_id);
+  const from = state.playlist_continues_at;
+  const then = tracks && from != null ? tracks.slice(from, from + 5) : [];
+  $("queue-then").hidden = then.length === 0;
+  $("queue-then-title").textContent = upNext.length ? `Then from ${state.playlist_name}` : `Next from ${state.playlist_name}`;
+  $("queue-then-list").replaceChildren(
+    ...then.map((track) => {
+      const li = document.createElement("li");
+      li.textContent = track.title;
+      return li;
+    }),
+  );
+}
+
+$("queue-toggle").addEventListener("click", () => setQueuePanel(!$("layout").classList.contains("queue-open")));
+$("queue-clear").addEventListener("click", () => api("DELETE", "/api/queue").then(renderState).catch(() => {}));
+setQueuePanel(queuePanelOpen());
 
 function mixStatus(state) {
   const onCues = (cues) => (cues ? ` on cues ${cues}` : "");
@@ -125,7 +300,8 @@ function mixStatus(state) {
       timed: "Crossfade",
       off: "Next track",
     };
-    return { text: `${kind[state.settings.mode]} in ${formatTime(state.mix_in_s)}`, mixing: false };
+    const into = state.next_track ? ` into “${state.next_track.title}”` : "";
+    return { text: `${kind[state.settings.mode]}${into} in ${formatTime(state.mix_in_s)}`, mixing: false };
   }
   if (state.loading) return { text: "Loading next track…", mixing: false };
   return { text: "", mixing: false };
@@ -150,7 +326,8 @@ function renderState(state) {
     const tempo = Math.abs(change) >= 0.0005
       ? ` · tempo ${change > 0 ? "+" : ""}${(change * 100).toFixed(1)}%${state.key_locked ? " (master tempo)" : ""}`
       : "";
-    $("now-meta").textContent = `${state.playlist_name} · ${state.index + 1} · ${state.track.bpm.toFixed(1)} BPM${tempo}`;
+    const where = state.from_queue ? "From the queue" : `${state.playlist_name} · ${state.index + 1}`;
+    $("now-meta").textContent = `${where} · ${state.track.bpm.toFixed(1)} BPM${tempo}`;
     $("pos").textContent = formatTime(state.position_s);
     $("dur").textContent = formatTime(state.duration_s);
     $("progress-bar").style.width = `${Math.min(100, (100 * state.position_s) / state.duration_s)}%`;
@@ -175,6 +352,7 @@ function renderState(state) {
     form.key_lock.checked = state.settings.key_lock;
   }
   highlightRows(state);
+  renderQueue(state);
 }
 
 const BPM_MIN = 40;
